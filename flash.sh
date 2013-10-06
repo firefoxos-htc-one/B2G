@@ -6,6 +6,7 @@ ADB=${ADB:-adb}
 FASTBOOT=${FASTBOOT:-fastboot}
 HEIMDALL=${HEIMDALL:-heimdall}
 VARIANT=${VARIANT:-eng}
+FULLFLASH=false
 
 if [ ! -f "`which \"$ADB\"`" ]; then
 	ADB=out/host/`uname -s | tr "[[:upper:]]" "[[:lower:]]"`-x86/bin/adb
@@ -195,12 +196,42 @@ delete_extra_gecko_files_on_device()
 	return 0
 }
 
+flash_gecko()
+{
+	delete_extra_gecko_files_on_device &&
+	run_adb push $GECKO_OBJDIR/dist/b2g /system/b2g &&
+	return 0
+}
+
+flash_gaia()
+{
+	GAIA_MAKE_FLAGS="ADB=\"$ADB\""
+	USER_VARIANTS="user(debug)?"
+	if [[ "$VARIANT" =~ $USER_VARIANTS ]]; then
+		# Gaia's build takes care of remounting /system for production builds
+		GAIA_MAKE_FLAGS+=" PRODUCTION=1"
+	fi
+	adb wait-for-device
+	if adb shell cat /data/local/webapps/webapps.json | grep -qs '"basePath": "/system' ; then
+		echo -n "In ${bold}production${offbold} mode"
+		export B2G_SYSTEM_APPS=1
+		adb remount
+	else
+		echo -n "In ${bold}dev${offbold} mode"
+	fi 
+	make -C gaia install-gaia $GAIA_MAKE_FLAGS
+	return 0
+}
+
 while [ $# -gt 0 ]; do
 	case "$1" in
 	"-s")
 		ADB_FLAGS+="-s $2"
 		FASTBOOT_FLAGS+="-s $2"
 		shift
+		;;
+	"-f")
+		FULLFLASH=true
 		;;
 	*)
 		PROJECT=$1
@@ -213,23 +244,14 @@ case "$PROJECT" in
 "gecko")
 	run_adb shell stop b2g &&
 	run_adb remount &&
-	delete_extra_gecko_files_on_device &&
-	run_adb push $GECKO_OBJDIR/dist/b2g /system/b2g &&
+	flash_gecko &&
 	echo Restarting B2G &&
 	run_adb shell start b2g
 	exit $?
 	;;
 
 "gaia")
-	GAIA_MAKE_FLAGS="ADB=\"$ADB\""
-	USER_VARIANTS="user(debug)?"
-	if [[ "$VARIANT" =~ $USER_VARIANTS ]]; then
-		# Gaia's build takes care of remounting /system for production builds
-		GAIA_MAKE_FLAGS+=" PRODUCTION=1"
-	fi
-
-	make -C gaia install-gaia $GAIA_MAKE_FLAGS
-	make -C gaia install-media-samples $GAIA_MAKE_FLAGS
+	flash_gaia
 	exit $?
 	;;
 
@@ -240,7 +262,24 @@ case "$PROJECT" in
 esac
 
 case "$DEVICE" in
-"otoro"|"unagi"|"keon"|"peak"|"inari"|"leo"|"hamachi"|"sp8810ea"|"helix"|"wasabi")
+"leo"|"hamachi"|"helix")
+	if $FULLFLASH; then
+		flash_fastboot nounlock $PROJECT
+		exit $?
+	else
+		run_adb root &&
+		run_adb shell stop b2g &&
+		run_adb remount &&
+		flash_gecko &&
+		flash_gaia &&
+		update_time &&
+		echo Restarting B2G &&
+		run_adb shell start b2g
+	fi
+	exit $?
+	;;
+
+"otoro"|"unagi"|"keon"|"peak"|"inari"|"sp8810ea"|"wasabi")
 	flash_fastboot nounlock $PROJECT
 	;;
 
